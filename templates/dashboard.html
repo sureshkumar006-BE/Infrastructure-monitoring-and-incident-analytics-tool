@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Infra Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8;
+          --ok:#22c55e; --warn:#f59e0b; --crit:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--text);
+         font-family: system-ui, sans-serif; }
+  h1 { margin:0 0 16px; font-size:22px; }
+  h2 { margin:0 0 10px; font-size:15px; color:var(--muted); font-weight:600; }
+  .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-bottom:14px; }
+  .card { background:var(--card); border-radius:10px; padding:14px; }
+  .big { font-size:28px; font-weight:700; }
+  .charts { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); margin-bottom:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid #334155; }
+  .badge { padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; }
+  .critical { background:var(--crit); } .warning { background:var(--warn); color:#000; }
+  .up { color:var(--ok); } .down { color:var(--crit); }
+</style>
+</head>
+<body>
+<h1>Infrastructure Monitor</h1>
+
+<div class="grid">
+  <div class="card"><h2>Open incidents</h2><div class="big" id="open">-</div></div>
+  <div class="card"><h2>Incidents (24h)</h2><div class="big" id="inc24">-</div></div>
+  <div class="card"><h2>MTTR (24h)</h2><div class="big" id="mttr">-</div></div>
+  <div class="card"><h2>Availability (24h)</h2><div class="big" id="avail">-</div></div>
+</div>
+
+<div class="charts">
+  <div class="card"><h2>CPU / Memory / Disk (%)</h2><canvas id="c1"></canvas></div>
+  <div class="card"><h2>Network (KB/s)</h2><canvas id="c2"></canvas></div>
+</div>
+
+<div class="grid" style="grid-template-columns:1fr 2fr">
+  <div class="card"><h2>Service health</h2><table id="health"></table></div>
+  <div class="card"><h2>Recent incidents</h2><table id="incidents"></table></div>
+</div>
+
+<script>
+const fmtT = ts => new Date(ts*1000).toLocaleTimeString();
+const fmtDT = ts => new Date(ts*1000).toLocaleString();
+const mk = (id, sets) => new Chart(document.getElementById(id), {
+  type:'line',
+  data:{labels:[], datasets:sets.map(([l,c])=>({label:l,borderColor:c,data:[],pointRadius:0,tension:.3}))},
+  options:{animation:false, scales:{x:{ticks:{color:'#94a3b8',maxTicksLimit:6}},y:{ticks:{color:'#94a3b8'},beginAtZero:true}},
+           plugins:{legend:{labels:{color:'#e2e8f0'}}}}
+});
+const c1 = mk('c1', [['CPU','#38bdf8'],['Memory','#a78bfa'],['Disk','#f59e0b']]);
+const c2 = mk('c2', [['Sent','#22c55e'],['Received','#f472b6']]);
+
+function setChart(ch, labels, series){
+  ch.data.labels = labels;
+  series.forEach((s,i)=> ch.data.datasets[i].data = s);
+  ch.update();
+}
+const dur = s => s==null ? 'n/a' : s<60 ? s.toFixed(0)+'s' : (s/60).toFixed(1)+'m';
+
+async function refresh(){
+  const [m, inc, hl, sm] = await Promise.all(
+    ['/api/metrics?minutes=30','/api/incidents','/api/health','/api/summary'].map(u=>fetch(u).then(r=>r.json())));
+
+  setChart(c1, m.map(r=>fmtT(r.ts)), [m.map(r=>r.cpu), m.map(r=>r.mem), m.map(r=>r.disk)]);
+  setChart(c2, m.map(r=>fmtT(r.ts)), [m.map(r=>r.net_sent_kbps), m.map(r=>r.net_recv_kbps)]);
+
+  document.getElementById('open').textContent = sm.open_incidents;
+  document.getElementById('inc24').textContent = sm.incidents_24h;
+  document.getElementById('mttr').textContent = dur(sm.mttr_seconds);
+  document.getElementById('avail').textContent = sm.availability_pct==null ? 'n/a' : sm.availability_pct+'%';
+
+  document.getElementById('health').innerHTML =
+    '<tr><th>Service</th><th>Status</th><th>Latency</th></tr>' +
+    hl.map(h=>`<tr><td>${h.name}</td><td class="${h.ok?'up':'down'}">${h.ok?'UP':'DOWN'}</td><td>${h.latency_ms} ms</td></tr>`).join('');
+
+  document.getElementById('incidents').innerHTML =
+    '<tr><th>Severity</th><th>Message</th><th>Started</th><th>Status</th></tr>' +
+    inc.map(i=>`<tr><td><span class="badge ${i.severity}">${i.severity}</span></td>
+      <td>${i.message}</td><td>${fmtDT(i.started_at)}</td>
+      <td>${i.resolved_at ? 'Resolved ('+dur(i.resolved_at-i.started_at)+')' : '<b class="down">OPEN</b>'}</td></tr>`).join('');
+}
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>
